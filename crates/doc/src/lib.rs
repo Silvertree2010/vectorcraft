@@ -268,15 +268,24 @@ impl Unit {
 
 fn parse_measure(s: &str, default: Unit) -> Option<f64> {
     let s = s.trim();
-    // Simple arithmetic on the right (Illustrator fields accept "10+5", "100/2", "3in*2").
-    for op in ['+', '-', '*', '/'] {
-        // Past the first character, so a leading sign isn't an operator.
-        let skip = s.chars().next().map_or(0, char::len_utf8);
-        if let Some(i) = s[skip..].rfind(op).map(|i| i + skip) {
-            let (l, r) = (&s[..i], &s[i + 1..]);
-            if l.trim().is_empty() {
-                continue;
+    // Simple arithmetic on the right (Illustrator fields accept "10+5", "100/2", "3in*2"). Split
+    // at the last operator of the loosest-binding level, so `+ -` bind looser than `* /` and both
+    // levels are left-associative (`10*3/2` is `(10*3)/2`).
+    for ops in [['+', '-'], ['*', '/']] {
+        // An operator needs an operand before it: a sign after another operator (`10*-2`) or at
+        // the start is part of the number.
+        let mut prev = None;
+        let mut at = None;
+        for (i, c) in s.char_indices() {
+            if ops.contains(&c) && prev.is_some_and(|p| !"+-*/".contains(p)) {
+                at = Some((i, c));
             }
+            if !c.is_whitespace() {
+                prev = Some(c);
+            }
+        }
+        if let Some((i, op)) = at {
+            let (l, r) = (s.get(..i)?, s.get(i + 1..)?);
             return match op {
                 '+' => Some(parse_measure(l, default)? + parse_measure(r, default)?),
                 '-' => Some(parse_measure(l, default)? - parse_measure(r, default)?),
