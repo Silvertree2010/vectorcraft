@@ -103,6 +103,9 @@ enum State {
         /// Group Selection, E pressed an odd number of times during the drag: the marquee selects
         /// only the objects that lie entirely inside it, whole.
         enclosed: bool,
+        /// Direct Selection, Alt held at the press: the marquee selects the paths it touches
+        /// whole, as Group Selection's click does (#4890).
+        whole: bool,
     },
     Corner(CornerDrag),
     /// Dragging a bracket of type on a path.
@@ -756,7 +759,7 @@ impl Tool for DirectSelectionTool {
                 if let Some(out) = self.press_hidden(cx, ev, p) {
                     return out;
                 }
-                self.state = State::Marquee { start: p, cur: p, toggle: ev.mods.shift, enclosed: false };
+                self.state = State::Marquee { start: p, cur: p, toggle: ev.mods.shift, enclosed: false, whole: ev.mods.alt };
                 vec![]
             }
             (PointerKind::Drag, State::MoveAnchors { start, grab, began }) => self.drag_move_anchors(cx, ev, p, (start, grab, began)),
@@ -839,8 +842,8 @@ impl Tool for DirectSelectionTool {
                 self.state = State::Idle;
                 self.mesh.release(cx).unwrap_or_default()
             }
-            (PointerKind::Drag, State::Marquee { start, toggle, enclosed, .. }) => {
-                self.state = State::Marquee { start, cur: p, toggle, enclosed };
+            (PointerKind::Drag, State::Marquee { start, toggle, enclosed, whole, .. }) => {
+                self.state = State::Marquee { start, cur: p, toggle, enclosed, whole };
                 vec![]
             }
             (PointerKind::Drag, State::Corner(mut c)) => {
@@ -875,7 +878,7 @@ impl Tool for DirectSelectionTool {
                 self.guides.clear();
                 vec![Action::Commit]
             }
-            (PointerKind::Up, State::Marquee { start, toggle, enclosed, .. }) => self.release_marquee(cx, p, (start, toggle, enclosed)),
+            (PointerKind::Up, State::Marquee { start, toggle, enclosed, whole, .. }) => self.release_marquee(cx, p, (start, toggle, enclosed, whole)),
             _ => vec![],
         }
     }
@@ -924,6 +927,8 @@ impl Tool for DirectSelectionTool {
                 | State::MoveObject { began: true, .. } => {
                     return if self.snapped { Cursor::ArrowHollow } else { Cursor::Arrow };
                 }
+                // An Alt marquee selects as Group Selection's does.
+                State::Marquee { whole: true, .. } => return Cursor::GroupSelection,
                 // Alt makes it the Group Selection tool for the next press, unless the press takes
                 // a handle, a mesh or spine point, a type frame's edge or a ruler guide.
                 State::Idle if m.alt => {
@@ -1102,7 +1107,7 @@ impl DirectSelectionTool {
             if let Some(out) = self.press_hidden(cx, ev, p) {
                 return out;
             }
-            self.state = State::Marquee { start: p, cur: p, toggle: ev.mods.shift, enclosed: false };
+            self.state = State::Marquee { start: p, cur: p, toggle: ev.mods.shift, enclosed: false, whole: false };
             return vec![];
         };
         // A compound path's paths are picked one at a time, below the compound path (#2441).
@@ -1381,7 +1386,7 @@ impl DirectSelectionTool {
             (false, None, None, None) => group.map(|g| Action::Exec("select.add".into(), json!({"ids": [g.0]}))).into_iter().collect(),
         }
     }
-    fn release_marquee(&mut self, cx: &ToolContext, p: Point, (start, toggle, enclosed): (Point, bool, bool)) -> Vec<Action> {
+    fn release_marquee(&mut self, cx: &ToolContext, p: Point, (start, toggle, enclosed, whole): (Point, bool, bool, bool)) -> Vec<Action> {
         self.state = State::Idle;
         let r = Rect::from_points(start, p);
         if r.width() < cx.tol(3.0) && r.height() < cx.tol(3.0) {
@@ -1400,6 +1405,18 @@ impl DirectSelectionTool {
             let ids: Vec<Value> = crate::select::inside(cx, r, touched).into_iter().map(|id| json!(id.0)).collect();
             let art = Action::Exec(if toggle { "select.toggle" } else { "select.set" }.into(), json!({ "ids": ids }));
             return std::iter::once(art).chain(crate::rulerguide::marquee_select(cx, r, true)).collect();
+        }
+        // Direct Selection with Alt: the objects the marquee touches (members of groups too) are
+        // selected whole, as an Alt-click selects one (#4890).
+        if whole {
+            let editable = cx.doc.editable();
+            let ids: Vec<Value> =
+                vectorcraft_doc::hit::marquee(cx.doc, r, cx.isolation, true).into_iter().filter(|id| editable(*id)).map(|id| json!(id.0)).collect();
+            if !toggle {
+                self.frame.clear();
+            }
+            let art = Action::Exec(if toggle { "select.toggle" } else { "select.set" }.into(), json!({ "ids": ids }));
+            return std::iter::once(art).chain(crate::rulerguide::marquee_select(cx, r, false)).collect();
         }
         // Anchors inside the rect, on editable paths inside isolation mode.
         let mut sel: Vec<(NodeId, Vec<AnchorRef>)> = vec![];

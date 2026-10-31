@@ -565,6 +565,27 @@ fn marquee_selects_anchors() {
     assert_eq!(a, vec![Action::Exec("select.anchorsMany".into(), json!({"items": [{"id": id.0, "anchors": [[0, 1]]}], "mode": "set"}))]);
 }
 
+/// #4890: with Alt, Direct Selection's marquee selects the paths it touches whole, as an Alt-click
+/// selects the path under it, and keeps the Group Selection cursor during the drag; with
+/// Shift+Alt it toggles them. A path the marquee misses is left out.
+#[test]
+fn alt_marquee_selects_touched_paths_whole_and_keeps_the_plus() {
+    let (d, a, _) = two_squares();
+    let (s, p) = (Selection::default(), paint());
+    let cx = cx(&d, &s, &p);
+    let alt = Mods { alt: true, ..Mods::default() };
+    let shift_alt = Mods { shift: true, ..alt };
+    for (m, cmd) in [(alt, "select.set"), (shift_alt, "select.toggle")] {
+        let mut t = DirectSelectionTool::new(false);
+        assert_eq!(t.cursor(&cx, Point::new(150.0, 50.0), m), Cursor::GroupSelection);
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Down, 150.0, 50.0).with_mods(m));
+        t.pointer(&cx, &PointerEvent::new(PointerKind::Drag, 250.0, 150.0).with_mods(m));
+        assert_eq!(t.cursor(&cx, Point::new(250.0, 150.0), m), Cursor::GroupSelection, "{cmd}");
+        let out = t.pointer(&cx, &PointerEvent::new(PointerKind::Up, 250.0, 150.0).with_mods(m));
+        assert_eq!(out, vec![Action::Exec(cmd.into(), json!({"ids": [a.0]}))]);
+    }
+}
+
 /// #4654: a marquee over part of a segment, with neither of its anchors inside, selects that
 /// segment as a click on it does; with Shift it toggles it. Group Selection selects objects.
 #[test]
